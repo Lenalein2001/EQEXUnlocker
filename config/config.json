@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "autoScan": false,
+  "autoImport": false,
+  "scanDelay": 0.02,
+  "importDelay": 0.35,
+  "scanBatchSize": 25,
+  "batchSize": 5,
+  "includeVanilla": false,
+  "keepInInventory": false,
+  "showProgress": true,
+  "showWindow": true,
+  "stopOnError": false,
+  "logBadItems": true,
+  "maxFailuresBeforePause": 10
+}
