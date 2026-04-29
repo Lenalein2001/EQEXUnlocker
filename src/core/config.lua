@@ -93,7 +93,7 @@ local function normalizeConfig(config)
     config.importDelay = clampNumber(config.importDelay, 0, 5, defaults.importDelay)
     config.scanBatchSize = math.floor(clampNumber(config.scanBatchSize, 1, 1000, defaults.scanBatchSize))
     config.batchSize = math.floor(clampNumber(config.batchSize, 1, 100, defaults.batchSize))
-    config.smartImportMinFps = math.floor(clampNumber(config.smartImportMinFps, 20, 240, defaults.smartImportMinFps))
+    config.smartImportMinFps = math.floor(clampNumber(config.smartImportMinFps, 10, 240, defaults.smartImportMinFps))
     config.maxFailuresBeforePause = math.floor(clampNumber(config.maxFailuresBeforePause, 1, 1000, defaults.maxFailuresBeforePause))
 end
 

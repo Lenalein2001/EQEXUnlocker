@@ -75,7 +75,7 @@ function ModSettings.initialize(ctx)
             saveAndLog(ctx, 'Import delay', value)
         end)
 
-        nativeSettings.addRangeFloat('/EQEXUnlocker/Main', 'Smart import min FPS', 'Importer slows down when FPS falls below this threshold', 20, 240, 1, '%.0f', ctx.config.smartImportMinFps, 55, function(value)
+        nativeSettings.addRangeFloat('/EQEXUnlocker/Main', 'Smart import min FPS', 'Importer slows down when FPS falls below this threshold', 10, 240, 1, '%.0f', ctx.config.smartImportMinFps, 55, function(value)
             ctx.config.smartImportMinFps = math.floor(value)
             saveAndLog(ctx, 'Smart import min FPS', ctx.config.smartImportMinFps)
         end)

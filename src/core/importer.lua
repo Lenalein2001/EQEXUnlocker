@@ -5,7 +5,6 @@ local Importer = {
     accumulator = 0,
     smoothedFps = 0,
     smartScale = 1.0,
-    lastSmartScale = 1.0,
     batchCarry = 0
 }
 
@@ -14,7 +13,6 @@ local SMART_DEADBAND_FPS = 1.0
 local SMART_RAMP_UP_PER_SEC = 0.55
 local SMART_RAMP_DOWN_PER_SEC = 3.20
 local SMART_MIN_SCALE = 0.05
-local SMART_MAX_SCALE = 3.00
 
 local function normalizeDeltaSeconds(deltaTime)
     local dt = tonumber(deltaTime or 0) or 0
@@ -65,7 +63,6 @@ end
 local function updateSmartScale(ctx, deltaTime)
     if not ctx.config.smartImport then
         Importer.smartScale = 1.0
-        Importer.lastSmartScale = 1.0
         return
     end
 
@@ -75,7 +72,7 @@ local function updateSmartScale(ctx, deltaTime)
     end
 
     local fps = tonumber(Importer.smoothedFps or 0) or 0
-    local minFps = math.max(20, tonumber(ctx.config.smartImportMinFps or 55) or 55)
+    local minFps = math.max(10, tonumber(ctx.config.smartImportMinFps or 55) or 55)
 
     if fps <= 0 then
         return
@@ -95,17 +92,7 @@ local function updateSmartScale(ctx, deltaTime)
 
     if Importer.smartScale < SMART_MIN_SCALE then
         Importer.smartScale = SMART_MIN_SCALE
-    elseif Importer.smartScale > SMART_MAX_SCALE then
-        Importer.smartScale = SMART_MAX_SCALE
     end
-
-    -- If we just throttled down, drop accumulated carry so we don't keep bursting.
-    if Importer.smartScale < Importer.lastSmartScale then
-        local ratio = Importer.smartScale / math.max(0.001, Importer.lastSmartScale)
-        Importer.batchCarry = Importer.batchCarry * ratio
-    end
-
-    Importer.lastSmartScale = Importer.smartScale
 end
 
 local function getSmartBatchSize(ctx, baseBatchSize)
@@ -113,15 +100,8 @@ local function getSmartBatchSize(ctx, baseBatchSize)
         return baseBatchSize
     end
 
-    local scaledBatch = baseBatchSize * Importer.smartScale
-    if scaledBatch <= 0 then
-        return 0
-    end
-
-    -- Keep token carry bounded to current operating speed so low-FPS throttling
-    -- is reflected immediately instead of draining a large backlog.
-    local carryCap = math.max(1.0, scaledBatch * 2.0)
-    Importer.batchCarry = math.min(carryCap, Importer.batchCarry + scaledBatch)
+    local scaledBatch = math.max(SMART_MIN_SCALE, baseBatchSize * Importer.smartScale)
+    Importer.batchCarry = Importer.batchCarry + scaledBatch
 
     local dynamicBatch = math.floor(Importer.batchCarry)
     if dynamicBatch <= 0 then
@@ -181,7 +161,6 @@ function Importer.begin(ctx)
     Importer.index = 1
     Importer.smoothedFps = 0
     Importer.smartScale = 1.0
-    Importer.lastSmartScale = 1.0
     Importer.batchCarry = 0
     if not resumeImport then
         ctx.state.importElapsed = 0
@@ -330,12 +309,8 @@ function Importer.resume(ctx)
     ctx.state.phase = 'import'
     ctx.state.paused = false
     Importer.index = math.max(1, tonumber(ctx.state.lastIndex or 1))
-    Importer.accumulator = 0
-    Importer.smoothedFps = 0
     Importer.smartScale = 1.0
-    Importer.lastSmartScale = 1.0
     Importer.batchCarry = 0
-    Config.saveState(ctx.config, State.snapshot(ctx.state, Importer.index))
     Logger.info('Import resumed at index ' .. tostring(Importer.index))
 end
 
@@ -345,7 +320,6 @@ function Importer.stop(ctx)
     Importer.accumulator = 0
     Importer.smoothedFps = 0
     Importer.smartScale = 1.0
-    Importer.lastSmartScale = 1.0
     Importer.batchCarry = 0
     ctx.state.paused = false
 end

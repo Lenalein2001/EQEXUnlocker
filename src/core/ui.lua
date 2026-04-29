@@ -160,14 +160,6 @@ function UI.drawStatus(ctx)
         ctx.startScan()
     end
     ImGui.SameLine()
-    if ImGui.Button('Start Import', 140, 30) then
-        ctx.startImport()
-    end
-
-    if ImGui.Button('Re-add All', 290, 30) then
-        ctx.forceRescanAll()
-    end
-
     if Importer.isRunning() and not ctx.state.paused then
         if ImGui.Button('Pause Import', 140, 30) then
             ctx.pauseImport()
@@ -176,6 +168,14 @@ function UI.drawStatus(ctx)
         if ImGui.Button('Resume Import', 140, 30) then
             ctx.resumeImport()
         end
+    else
+        if ImGui.Button('Start Import', 140, 30) then
+            ctx.startImport()
+        end
+    end
+
+    if ImGui.Button('Re-add All', 290, 30) then
+        ctx.forceRescanAll()
     end
 
     if ImGui.Button('Reset Session', 140, 30) then
@@ -278,7 +278,7 @@ function UI.drawSettings(ctx)
     ImGui.SameLine()
     local minFps, minFpsUsed = ImGui.InputInt('##smartImportMinFps', ctx.config.smartImportMinFps, 1, 5)
     if minFpsUsed and minFps ~= ctx.config.smartImportMinFps then
-        ctx.config.smartImportMinFps = math.max(20, math.min(240, minFps))
+        ctx.config.smartImportMinFps = math.max(10, math.min(240, minFps))
         changed = true
     end
 

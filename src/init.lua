@@ -83,7 +83,7 @@ end
 
 SafeUnlocker = SafeUnlocker or {}
 SafeUnlocker.name = 'EQEX Unlocker'
-SafeUnlocker.version = '0.2.1'
+SafeUnlocker.version = '0.2.2'
 SafeUnlocker.config = Config.load()
 SafeUnlocker.state = State.new()
 SafeUnlocker.ts = nil
@@ -93,6 +93,7 @@ SafeUnlocker.outfitSystem = nil
 SafeUnlocker.equipData = nil
 SafeUnlocker.blacklist = Config.loadBlacklist(SafeUnlocker.config)
 SafeUnlocker.forceScanAll = false
+SafeUnlocker.forceAutoImport = false
 SafeUnlocker.renderFps = 0
 
 local function safeCall(fn, ...)
@@ -150,6 +151,7 @@ function SafeUnlocker.startScan()
         return
     end
     SafeUnlocker.forceScanAll = false
+    SafeUnlocker.forceAutoImport = false
     resolveSystems(SafeUnlocker)
     Scanner.begin(SafeUnlocker)
 end
@@ -165,6 +167,7 @@ function SafeUnlocker.forceRescanAll()
     Importer.stop(SafeUnlocker)
     Scanner.stop(SafeUnlocker)
     SafeUnlocker.forceScanAll = true
+    SafeUnlocker.forceAutoImport = true
     Logger.info('Starting full re-add scan; already unlocked/imported items will be queued again')
     resolveSystems(SafeUnlocker)
     Scanner.begin(SafeUnlocker)
@@ -197,6 +200,7 @@ function SafeUnlocker.resetSession()
     Importer.stop(SafeUnlocker)
     Scanner.stop(SafeUnlocker)
     SafeUnlocker.forceScanAll = false
+    SafeUnlocker.forceAutoImport = false
     SafeUnlocker.state = State.new()
     Config.saveState(SafeUnlocker.config, State.snapshot(SafeUnlocker.state, 1))
     Config.saveQueue(SafeUnlocker.config, {})
@@ -301,6 +305,7 @@ registerForEvent('onShutdown', function()
     lastDrawClock = 0
     drawFpsSmoothed = 0
     SafeUnlocker.forceScanAll = false
+    SafeUnlocker.forceAutoImport = false
     SafeUnlocker.renderFps = 0
     -- Stop any running operations and reset transient state so
     -- stale results don't show in the main menu HUD
@@ -354,7 +359,8 @@ registerForEvent('onUpdate', function(deltaTime)
     Scanner.tick(SafeUnlocker, deltaTime or 0)
     Importer.tick(SafeUnlocker, deltaTime or 0)
 
-    if SafeUnlocker.state.readyToImport and SafeUnlocker.config.autoImport then
+    if SafeUnlocker.state.readyToImport and (SafeUnlocker.config.autoImport or SafeUnlocker.forceAutoImport) then
+        SafeUnlocker.forceAutoImport = false
         SafeUnlocker.state.readyToImport = false
         SafeUnlocker.startImport()
     end
