@@ -164,7 +164,7 @@ function UI.drawStatus(ctx)
         ctx.startImport()
     end
 
-    if ImGui.Button('Re-add All', 280, 30) then
+    if ImGui.Button('Re-add All', 290, 30) then
         ctx.forceRescanAll()
     end
 
