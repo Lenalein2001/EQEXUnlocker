@@ -20,7 +20,7 @@ function Logger.init(config)
     end
 
     -- CET's Lua sandbox does not provide os.mkdir / lfs, so we try lfs if available.
-    local ok = pcall(function()
+    pcall(function()
         local lfs = require('lfs')
         local dir = Logger.sessionPath:match('^(.+)[/\\][^/\\]+$')
         if dir then lfs.mkdir(dir) end

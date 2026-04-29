@@ -1,4 +1,4 @@
-# Robust Equipment-EX Unlocker
+# Equipment-EX Unlocker
 
 A safer Cyber Engine Tweaks Lua mod for Cyberpunk 2077 that scans clothing records carefully, imports them in small batches, and helps identify problematic clothing items instead of blindly crashing.
 
@@ -11,6 +11,9 @@ A safer Cyber Engine Tweaks Lua mod for Cyberpunk 2077 that scans clothing recor
 - saved progress in case the game stops during import
 - bad-item logging for easier diagnosis
 - blacklist support for clothing IDs that repeatedly fail
+- full re-scan and re-add path for all eligible clothing
+- smart importer that adapts throughput to stay above a target FPS
+- live scan/import timers and ETA display in CET panel and HUD
 
 ## Why it is more robust
 
@@ -30,9 +33,20 @@ The mod saves the current item identifier before each import attempt. If the gam
 1. install the folder as a CET mod
 2. if you use Native Settings, open the in-game mod settings and look for EQEX Unlocker
 3. otherwise open the CET overlay window
-4. click Start Safe Scan
+4. click Start Scan
 5. after the scan completes, click Start Import
 6. if failures appear, use Blacklist Failed IDs and resume the import
+
+## Smart import and telemetry
+
+- Enable Smart import to dynamically reduce or increase import throughput based on FPS.
+- Set Smart import minimum FPS to the floor you want the importer to respect.
+- Status and HUD show:
+- current phase and counters
+- elapsed scan/import time
+- live or estimated ETA
+- current FPS and smart speed percentage when smart import is enabled
+- Use Re-add All to force a full queue rebuild, including already unlocked/imported items.
 
 ## Default behavior
 
@@ -43,9 +57,6 @@ The defaults are intentionally conservative:
 - short scan delay
 - slower import delay
 - small import batches
+- smart import disabled by default
 
 That makes it much safer for heavy clothing load orders.
-
-## Current status
-
-This repo now contains a full working starter implementation designed for live in-game testing and iteration.

@@ -2,8 +2,135 @@
 local Importer = {
     running = false,
     index = 1,
-    accumulator = 0
+    accumulator = 0,
+    smoothedFps = 0,
+    smartScale = 1.0,
+    lastSmartScale = 1.0,
+    batchCarry = 0
 }
+
+local FPS_SMOOTHING = 0.20
+local SMART_DEADBAND_FPS = 1.0
+local SMART_RAMP_UP_PER_SEC = 0.55
+local SMART_RAMP_DOWN_PER_SEC = 3.20
+local SMART_MIN_SCALE = 0.05
+local SMART_MAX_SCALE = 3.00
+
+local function normalizeDeltaSeconds(deltaTime)
+    local dt = tonumber(deltaTime or 0) or 0
+    if dt <= 0 then
+        return nil
+    end
+
+    -- Some CET setups report seconds, some report milliseconds.
+    if dt > 1 then
+        dt = dt / 1000
+    end
+
+    if dt <= 0 then
+        return nil
+    end
+
+    return dt
+end
+
+local function updateFpsEstimate(ctx, deltaTime)
+    local renderFps = tonumber((ctx and ctx.renderFps) or 0) or 0
+    if renderFps > 0 then
+        if Importer.smoothedFps <= 0 then
+            Importer.smoothedFps = renderFps
+        else
+            Importer.smoothedFps = (Importer.smoothedFps * (1 - FPS_SMOOTHING)) + (renderFps * FPS_SMOOTHING)
+        end
+        return
+    end
+
+    local dt = normalizeDeltaSeconds(deltaTime)
+    if not dt then
+        return
+    end
+
+    local instantFps = 1 / dt
+    if instantFps <= 0 then
+        return
+    end
+
+    if Importer.smoothedFps <= 0 then
+        Importer.smoothedFps = instantFps
+    else
+        Importer.smoothedFps = (Importer.smoothedFps * (1 - FPS_SMOOTHING)) + (instantFps * FPS_SMOOTHING)
+    end
+end
+
+local function updateSmartScale(ctx, deltaTime)
+    if not ctx.config.smartImport then
+        Importer.smartScale = 1.0
+        Importer.lastSmartScale = 1.0
+        return
+    end
+
+    local dt = normalizeDeltaSeconds(deltaTime)
+    if not dt or dt <= 0 then
+        return
+    end
+
+    local fps = tonumber(Importer.smoothedFps or 0) or 0
+    local minFps = math.max(20, tonumber(ctx.config.smartImportMinFps or 55) or 55)
+
+    if fps <= 0 then
+        return
+    end
+
+    local error = fps - minFps
+    if math.abs(error) <= SMART_DEADBAND_FPS then
+        return
+    end
+
+    local normalizedError = math.min(1.0, math.abs(error) / math.max(1, minFps))
+    if error > 0 then
+        Importer.smartScale = Importer.smartScale + (SMART_RAMP_UP_PER_SEC * normalizedError * dt)
+    else
+        Importer.smartScale = Importer.smartScale - (SMART_RAMP_DOWN_PER_SEC * normalizedError * dt)
+    end
+
+    if Importer.smartScale < SMART_MIN_SCALE then
+        Importer.smartScale = SMART_MIN_SCALE
+    elseif Importer.smartScale > SMART_MAX_SCALE then
+        Importer.smartScale = SMART_MAX_SCALE
+    end
+
+    -- If we just throttled down, drop accumulated carry so we don't keep bursting.
+    if Importer.smartScale < Importer.lastSmartScale then
+        local ratio = Importer.smartScale / math.max(0.001, Importer.lastSmartScale)
+        Importer.batchCarry = Importer.batchCarry * ratio
+    end
+
+    Importer.lastSmartScale = Importer.smartScale
+end
+
+local function getSmartBatchSize(ctx, baseBatchSize)
+    if not ctx.config.smartImport then
+        return baseBatchSize
+    end
+
+    local scaledBatch = baseBatchSize * Importer.smartScale
+    if scaledBatch <= 0 then
+        return 0
+    end
+
+    -- Keep token carry bounded to current operating speed so low-FPS throttling
+    -- is reflected immediately instead of draining a large backlog.
+    local carryCap = math.max(1.0, scaledBatch * 2.0)
+    Importer.batchCarry = math.min(carryCap, Importer.batchCarry + scaledBatch)
+
+    local dynamicBatch = math.floor(Importer.batchCarry)
+    if dynamicBatch <= 0 then
+        return 0
+    end
+
+    Importer.batchCarry = Importer.batchCarry - dynamicBatch
+    return math.max(1, dynamicBatch)
+end
 
 local function resolveTdbid(item)
     if item.tdbid then
@@ -32,6 +159,8 @@ function Importer.begin(ctx)
         return
     end
 
+    local resumeImport = ctx.state.phase == 'import' and (ctx.state.lastIndex or 1) > 1
+
     if not ctx.state.candidates or #ctx.state.candidates == 0 then
         ctx.state.candidates = Config.loadQueue(ctx.config)
         ctx.state.queued = #ctx.state.candidates
@@ -50,8 +179,15 @@ function Importer.begin(ctx)
 
     Importer.running = true
     Importer.index = 1
+    Importer.smoothedFps = 0
+    Importer.smartScale = 1.0
+    Importer.lastSmartScale = 1.0
+    Importer.batchCarry = 0
+    if not resumeImport then
+        ctx.state.importElapsed = 0
+    end
     -- Only resume from saved index when we're actually resuming an interrupted import
-    if ctx.state.phase == 'import' and (ctx.state.lastIndex or 1) > 1 then
+    if resumeImport then
         Importer.index = math.max(1, tonumber(ctx.state.lastIndex))
     end
     Importer.accumulator = 0
@@ -68,14 +204,26 @@ function Importer.tick(ctx, deltaTime)
         return
     end
 
+    updateFpsEstimate(ctx, deltaTime)
+    updateSmartScale(ctx, deltaTime)
+    ctx.state.importElapsed = (ctx.state.importElapsed or 0) + (deltaTime or 0)
+
     Importer.accumulator = Importer.accumulator + (deltaTime or 0)
     if Importer.accumulator < ctx.config.importDelay then
         return
     end
 
-    Importer.accumulator = 0
     local processed = 0
-    local batchSize = math.max(1, tonumber(ctx.config.batchSize or 1))
+    local baseBatchSize = math.max(1, tonumber(ctx.config.batchSize or 1))
+    local batchSize = getSmartBatchSize(ctx, baseBatchSize)
+
+    -- Reset the cadence timer every cycle; smart batching uses token carry
+    -- to gradually ramp work instead of hard skip/start oscillation.
+    Importer.accumulator = 0
+
+    if batchSize <= 0 then
+        return
+    end
 
     while processed < batchSize and Importer.index <= #ctx.state.candidates do
         local item = ctx.state.candidates[Importer.index]
@@ -182,6 +330,12 @@ function Importer.resume(ctx)
     ctx.state.phase = 'import'
     ctx.state.paused = false
     Importer.index = math.max(1, tonumber(ctx.state.lastIndex or 1))
+    Importer.accumulator = 0
+    Importer.smoothedFps = 0
+    Importer.smartScale = 1.0
+    Importer.lastSmartScale = 1.0
+    Importer.batchCarry = 0
+    Config.saveState(ctx.config, State.snapshot(ctx.state, Importer.index))
     Logger.info('Import resumed at index ' .. tostring(Importer.index))
 end
 
@@ -189,11 +343,23 @@ function Importer.stop(ctx)
     Importer.running = false
     Importer.index = 1
     Importer.accumulator = 0
+    Importer.smoothedFps = 0
+    Importer.smartScale = 1.0
+    Importer.lastSmartScale = 1.0
+    Importer.batchCarry = 0
     ctx.state.paused = false
 end
 
 function Importer.isRunning()
     return Importer.running
+end
+
+function Importer.getSmoothedFps()
+    return Importer.smoothedFps or 0
+end
+
+function Importer.getSmartScale()
+    return Importer.smartScale or 1.0
 end
 
 return Importer

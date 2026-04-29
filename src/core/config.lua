@@ -8,6 +8,8 @@ local defaults = {
     importDelay = 0.35,
     scanBatchSize = 25,
     batchSize = 5,
+    smartImport = false,
+    smartImportMinFps = 55,
     includeVanilla = false,
     keepInInventory = false,
     showProgress = true,
@@ -51,9 +53,54 @@ local function mergeTable(base, override)
     return result
 end
 
+local function clampNumber(value, minValue, maxValue, fallback)
+    local numberValue = tonumber(value)
+    if numberValue == nil then
+        numberValue = tonumber(fallback) or 0
+    end
+    if numberValue < minValue then
+        return minValue
+    end
+    if numberValue > maxValue then
+        return maxValue
+    end
+    return numberValue
+end
+
+local function toBoolean(value, fallback)
+    if type(value) == 'boolean' then
+        return value
+    end
+    if type(fallback) == 'boolean' then
+        return fallback
+    end
+    return false
+end
+
+local function normalizeConfig(config)
+    config.enabled = toBoolean(config.enabled, defaults.enabled)
+    config.autoScan = toBoolean(config.autoScan, defaults.autoScan)
+    config.autoImport = toBoolean(config.autoImport, defaults.autoImport)
+    config.includeVanilla = toBoolean(config.includeVanilla, defaults.includeVanilla)
+    config.keepInInventory = toBoolean(config.keepInInventory, defaults.keepInInventory)
+    config.showProgress = toBoolean(config.showProgress, defaults.showProgress)
+    config.showWindow = toBoolean(config.showWindow, defaults.showWindow)
+    config.stopOnError = toBoolean(config.stopOnError, defaults.stopOnError)
+    config.logBadItems = toBoolean(config.logBadItems, defaults.logBadItems)
+    config.smartImport = toBoolean(config.smartImport, defaults.smartImport)
+
+    config.scanDelay = clampNumber(config.scanDelay, 0, 1, defaults.scanDelay)
+    config.importDelay = clampNumber(config.importDelay, 0, 5, defaults.importDelay)
+    config.scanBatchSize = math.floor(clampNumber(config.scanBatchSize, 1, 1000, defaults.scanBatchSize))
+    config.batchSize = math.floor(clampNumber(config.batchSize, 1, 100, defaults.batchSize))
+    config.smartImportMinFps = math.floor(clampNumber(config.smartImportMinFps, 20, 240, defaults.smartImportMinFps))
+    config.maxFailuresBeforePause = math.floor(clampNumber(config.maxFailuresBeforePause, 1, 1000, defaults.maxFailuresBeforePause))
+end
+
 function Config.load()
     local loaded = Files.loadJson(defaults.paths.config, {})
     local config = mergeTable(defaults, loaded)
+    normalizeConfig(config)
     config.paths = copyTable(defaults.paths)
     return config
 end

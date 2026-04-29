@@ -1,27 +1,89 @@
 local modSettingsReady = false
-local modSettingsTimer = 3.0
+local MOD_SETTINGS_RETRY_SECONDS = 3.0
+local modSettingsTimer = MOD_SETTINGS_RETRY_SECONDS
 local overlayOpen = false
 local pendingAutoScan = false
 local pendingImportResume = false
 local inGameCached = false
+local sessionReady = false
+local lastDrawClock = 0
+local drawFpsSmoothed = 0
+local DRAW_FPS_SMOOTHING = 0.20
+
+local function isMenuActive()
+    local ok, result = pcall(function()
+        local defs = Game.GetAllBlackboardDefs()
+        if not defs then
+            return false
+        end
+
+        local blackboardSystem = Game.GetBlackboardSystem()
+        if not blackboardSystem then
+            return false
+        end
+
+        local uiBoard = blackboardSystem:Get(defs.UI_System)
+        if uiBoard and uiBoard:GetBool(defs.UI_System.IsInMenu) and not overlayOpen then
+            return true
+        end
+        if uiBoard and uiBoard:GetBool(defs.UI_System.IsLoading) then
+            return true
+        end
+
+        local photoBoard = blackboardSystem:Get(defs.PhotoMode)
+        if photoBoard and photoBoard:GetBool(defs.PhotoMode.IsActive) then
+            return true
+        end
+
+        return false
+    end)
+
+    if ok then
+        return result == true
+    end
+
+    return false
+end
+
+local function isGameplayReadyNow()
+    local player = Game.GetPlayer()
+    if not player or not player:IsAttached() then
+        return false
+    end
+    if GetSingleton('inkMenuScenario'):GetSystemRequestsHandler():IsPreGame() then
+        return false
+    end
+    if isMenuActive() then
+        return false
+    end
+
+    return true
+end
 
 local function isInGame()
     local ok, result = pcall(function()
-        local player = Game.GetPlayer()
-        if not player or not player:IsAttached() then
+        local gameplayReady = isGameplayReadyNow()
+        if not gameplayReady then
             return false
         end
-        if GetSingleton('inkMenuScenario'):GetSystemRequestsHandler():IsPreGame() then
-            return false
+
+        -- When CET reloads mods mid-session, observer-based OnInitialize may not fire again.
+        -- Recover readiness from the current live game state so actions still work.
+        if not sessionReady then
+            sessionReady = true
+            if Logger and Logger.info then
+                Logger.info('Recovered session readiness from live gameplay state')
+            end
         end
+        
         return true
     end)
     return ok and result == true
 end
 
 SafeUnlocker = SafeUnlocker or {}
-SafeUnlocker.name = 'Robust Equipment-EX Unlocker'
-SafeUnlocker.version = '0.2.0'
+SafeUnlocker.name = 'EQEX Unlocker'
+SafeUnlocker.version = '0.2.1'
 SafeUnlocker.config = Config.load()
 SafeUnlocker.state = State.new()
 SafeUnlocker.ts = nil
@@ -30,6 +92,8 @@ SafeUnlocker.wardrobeSystem = nil
 SafeUnlocker.outfitSystem = nil
 SafeUnlocker.equipData = nil
 SafeUnlocker.blacklist = Config.loadBlacklist(SafeUnlocker.config)
+SafeUnlocker.forceScanAll = false
+SafeUnlocker.renderFps = 0
 
 local function safeCall(fn, ...)
     local ok, result = pcall(fn, ...)
@@ -69,16 +133,48 @@ local function restoreSavedProgress(ctx)
     end
 end
 
+local function canRunGameplayAction(actionName)
+    if isInGame() then
+        return true
+    end
+
+    Logger.warn(tostring(actionName or 'Action') .. ' requested outside gameplay; load into a save first')
+    return false
+end
+
 function SafeUnlocker.startScan()
     if not SafeUnlocker.config.enabled then
         return
     end
+    if not canRunGameplayAction('Scan') then
+        return
+    end
+    SafeUnlocker.forceScanAll = false
+    resolveSystems(SafeUnlocker)
+    Scanner.begin(SafeUnlocker)
+end
+
+function SafeUnlocker.forceRescanAll()
+    if not SafeUnlocker.config.enabled then
+        return
+    end
+    if not canRunGameplayAction('Full re-add scan') then
+        return
+    end
+
+    Importer.stop(SafeUnlocker)
+    Scanner.stop(SafeUnlocker)
+    SafeUnlocker.forceScanAll = true
+    Logger.info('Starting full re-add scan; already unlocked/imported items will be queued again')
     resolveSystems(SafeUnlocker)
     Scanner.begin(SafeUnlocker)
 end
 
 function SafeUnlocker.startImport()
     if not SafeUnlocker.config.enabled then
+        return
+    end
+    if not canRunGameplayAction('Import') then
         return
     end
     resolveSystems(SafeUnlocker)
@@ -90,6 +186,9 @@ function SafeUnlocker.pauseImport()
 end
 
 function SafeUnlocker.resumeImport()
+    if not canRunGameplayAction('Resume import') then
+        return
+    end
     resolveSystems(SafeUnlocker)
     Importer.resume(SafeUnlocker)
 end
@@ -97,6 +196,7 @@ end
 function SafeUnlocker.resetSession()
     Importer.stop(SafeUnlocker)
     Scanner.stop(SafeUnlocker)
+    SafeUnlocker.forceScanAll = false
     SafeUnlocker.state = State.new()
     Config.saveState(SafeUnlocker.config, State.snapshot(SafeUnlocker.state, 1))
     Config.saveQueue(SafeUnlocker.config, {})
@@ -118,6 +218,20 @@ registerForEvent('onInit', function()
 
     local ok, err = pcall(function()
         Logger.init(SafeUnlocker.config)
+
+        pcall(function()
+            Observe('QuestTrackerGameController', 'OnInitialize', function()
+                if not sessionReady then
+                    sessionReady = true
+                    Logger.info('Game session controller initialized')
+                end
+            end)
+
+            Observe('QuestTrackerGameController', 'OnUninitialize', function()
+                sessionReady = false
+                Logger.info('Game session controller uninitialized')
+            end)
+        end)
 
         -- Start with a clean state every session; persisted state is only used
         -- for the previous record-count so we can detect new mods.
@@ -183,6 +297,11 @@ registerForEvent('onShutdown', function()
     overlayOpen = false
     pendingAutoScan = false
     pendingImportResume = false
+    sessionReady = false
+    lastDrawClock = 0
+    drawFpsSmoothed = 0
+    SafeUnlocker.forceScanAll = false
+    SafeUnlocker.renderFps = 0
     -- Stop any running operations and reset transient state so
     -- stale results don't show in the main menu HUD
     Scanner.stop(SafeUnlocker)
@@ -200,7 +319,20 @@ end)
 
 registerForEvent('onUpdate', function(deltaTime)
     inGameCached = isInGame()
-    if not inGameCached or not SafeUnlocker.config.enabled then
+
+    if not modSettingsReady then
+        modSettingsTimer = modSettingsTimer - (deltaTime or 0)
+        if modSettingsTimer <= 0 then
+            local initialized = ModSettings.initialize(SafeUnlocker)
+            if initialized then
+                modSettingsReady = true
+            else
+                modSettingsTimer = MOD_SETTINGS_RETRY_SECONDS
+            end
+        end
+    end
+
+    if not SafeUnlocker.config.enabled or not inGameCached then
         return
     end
 
@@ -213,17 +345,10 @@ registerForEvent('onUpdate', function(deltaTime)
         Importer.begin(SafeUnlocker)
     elseif pendingAutoScan then
         pendingAutoScan = false
+        SafeUnlocker.forceScanAll = false
         Logger.info('Player loaded, starting deferred auto-scan')
         resolveSystems(SafeUnlocker)
         Scanner.begin(SafeUnlocker)
-    end
-
-    if not modSettingsReady then
-        modSettingsTimer = modSettingsTimer - (deltaTime or 0)
-        if modSettingsTimer <= 0 then
-            modSettingsReady = true
-            ModSettings.initialize(SafeUnlocker)
-        end
     end
 
     Scanner.tick(SafeUnlocker, deltaTime or 0)
@@ -236,15 +361,27 @@ registerForEvent('onUpdate', function(deltaTime)
 end)
 
 registerForEvent('onDraw', function()
-    if not SafeUnlocker.config.enabled then
-        return
+    local now = os.clock()
+    if lastDrawClock > 0 then
+        local dt = now - lastDrawClock
+        if dt > 0 then
+            local fps = 1 / dt
+            if drawFpsSmoothed <= 0 then
+                drawFpsSmoothed = fps
+            else
+                drawFpsSmoothed = (drawFpsSmoothed * (1 - DRAW_FPS_SMOOTHING)) + (fps * DRAW_FPS_SMOOTHING)
+            end
+            SafeUnlocker.renderFps = drawFpsSmoothed
+        end
     end
+    lastDrawClock = now
+
     -- HUD shows during gameplay regardless of overlay
-    if inGameCached then
+    if SafeUnlocker.config.enabled and inGameCached then
         UI.drawHUD(SafeUnlocker)
     end
-    -- Panel only shows when CET overlay is open AND in game
-    if overlayOpen and inGameCached then
+    -- Panel shows whenever CET overlay is open
+    if overlayOpen and SafeUnlocker.config.showWindow then
         UI.draw(SafeUnlocker)
     end
 end)

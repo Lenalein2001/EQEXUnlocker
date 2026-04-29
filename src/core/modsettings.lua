@@ -1,4 +1,5 @@
 local ModSettings = {}
+local missingDependencyWarned = false
 
 local function saveAndLog(ctx, label, value)
     Config.save(ctx.config)
@@ -13,15 +14,19 @@ function ModSettings.initialize(ctx)
     end)
 
     if not ok or not nativeSettings then
-        print('[SafeUnlocker] nativeSettings mod NOT found.')
-        print('[SafeUnlocker] To get an in-game settings menu, install the Native Settings UI mod:')
-        print('[SafeUnlocker]   https://www.nexusmods.com/cyberpunk2077/mods/3518')
-        print('[SafeUnlocker] For now, open the CET overlay (press ~) to use the mod window.')
-        Logger.warn('nativeSettings not found; install https://www.nexusmods.com/cyberpunk2077/mods/3518 for in-game settings')
+        if not missingDependencyWarned then
+            missingDependencyWarned = true
+            print('[SafeUnlocker] nativeSettings mod NOT found.')
+            print('[SafeUnlocker] To get an in-game settings menu, install the Native Settings UI mod:')
+            print('[SafeUnlocker] https://www.nexusmods.com/cyberpunk2077/mods/3518')
+            Logger.warn('nativeSettings not found; install https://www.nexusmods.com/cyberpunk2077/mods/3518 for in-game settings')
+        end
         return false
     end
 
-    pcall(function()
+    missingDependencyWarned = false
+
+    local registered, registerError = pcall(function()
         nativeSettings.addTab('/EQEXUnlocker', 'EQEX Unlocker')
         nativeSettings.addSubcategory('/EQEXUnlocker/Main', 'General')
 
@@ -55,6 +60,11 @@ function ModSettings.initialize(ctx)
             saveAndLog(ctx, 'Stop on error', state)
         end)
 
+        nativeSettings.addSwitch('/EQEXUnlocker/Main', 'Smart import', 'Automatically throttle import speed to stay above a target FPS', ctx.config.smartImport, true, function(state)
+            ctx.config.smartImport = state
+            saveAndLog(ctx, 'Smart import', state)
+        end)
+
         nativeSettings.addRangeFloat('/EQEXUnlocker/Main', 'Scan delay', 'Delay between clothing scan batches (seconds)', 0.00, 1.00, 0.01, '%.2f', ctx.config.scanDelay, 0.02, function(value)
             ctx.config.scanDelay = value
             saveAndLog(ctx, 'Scan delay', value)
@@ -65,7 +75,12 @@ function ModSettings.initialize(ctx)
             saveAndLog(ctx, 'Import delay', value)
         end)
 
-        nativeSettings.addRangeFloat('/EQEXUnlocker/Main', 'Scan batch size', 'Records validated per scan tick (higher = faster but more risky)', 1, 200, 1, '%.0f', ctx.config.scanBatchSize, 25, function(value)
+        nativeSettings.addRangeFloat('/EQEXUnlocker/Main', 'Smart import min FPS', 'Importer slows down when FPS falls below this threshold', 20, 240, 1, '%.0f', ctx.config.smartImportMinFps, 55, function(value)
+            ctx.config.smartImportMinFps = math.floor(value)
+            saveAndLog(ctx, 'Smart import min FPS', ctx.config.smartImportMinFps)
+        end)
+
+        nativeSettings.addRangeFloat('/EQEXUnlocker/Main', 'Scan batch size', 'Records validated per scan tick (higher = faster but more risky)', 1, 1000, 1, '%.0f', ctx.config.scanBatchSize, 25, function(value)
             ctx.config.scanBatchSize = math.floor(value)
             saveAndLog(ctx, 'Scan batch size', ctx.config.scanBatchSize)
         end)
@@ -75,17 +90,21 @@ function ModSettings.initialize(ctx)
             saveAndLog(ctx, 'Import batch size', ctx.config.batchSize)
         end)
 
-        nativeSettings.addRangeFloat('/EQEXUnlocker/Main', 'Max failures before pause', 'Auto-pause after this many failed imports', 1, 100, 1, '%.0f', ctx.config.maxFailuresBeforePause, 10, function(value)
+        nativeSettings.addRangeFloat('/EQEXUnlocker/Main', 'Max failures before pause', 'Auto-pause after this many failed imports', 1, 500, 1, '%.0f', ctx.config.maxFailuresBeforePause, 10, function(value)
             ctx.config.maxFailuresBeforePause = math.floor(value)
             saveAndLog(ctx, 'Max failures before pause', ctx.config.maxFailuresBeforePause)
         end)
 
-        nativeSettings.addButton('/EQEXUnlocker/Main', 'Start safe scan', 'Begin the guarded clothing scan', 'Scan', 50, function()
+        nativeSettings.addButton('/EQEXUnlocker/Main', 'Start scan', 'Begin the clothing scan', 'Scan', 50, function()
             ctx.startScan()
         end)
 
         nativeSettings.addButton('/EQEXUnlocker/Main', 'Start import', 'Begin importing queued clothing', 'Import', 50, function()
             ctx.startImport()
+        end)
+
+        nativeSettings.addButton('/EQEXUnlocker/Main', 'Re-scan and re-add all', 'Queue all eligible clothing again, including already unlocked/imported items', 'Re-add All', 50, function()
+            ctx.forceRescanAll()
         end)
 
         nativeSettings.addButton('/EQEXUnlocker/Main', 'Pause import', 'Pause the running import', 'Pause', 50, function()
@@ -105,7 +124,11 @@ function ModSettings.initialize(ctx)
         end)
     end)
 
-    print('[SafeUnlocker] Native Settings tab registered — look for EQEXUnlocker in the main menu settings')
+    if not registered then
+        Logger.error('nativeSettings registration failed: ' .. tostring(registerError))
+        return false
+    end
+
     Logger.info('nativeSettings integration initialized')
     return true
 end

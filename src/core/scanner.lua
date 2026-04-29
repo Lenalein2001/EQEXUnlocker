@@ -90,11 +90,11 @@ local function evaluateRecord(ctx, record, scanIndex)
             return { status = 'skip', reason = 'quest item', id = itemId, name = itemName }
         end
 
-        if ctx.unlocked and ctx.unlocked[itemId] then
+        if not ctx.forceScanAll and ctx.unlocked and ctx.unlocked[itemId] then
             return { status = 'skip', reason = 'already unlocked', id = itemId, name = itemName }
         end
 
-        if ctx.importedSet and ctx.importedSet[itemId] then
+        if not ctx.forceScanAll and ctx.importedSet and ctx.importedSet[itemId] then
             return { status = 'skip', reason = 'already unlocked', id = itemId, name = itemName }
         end
 
@@ -132,6 +132,7 @@ function Scanner.begin(ctx)
     end
 
     State.reset(ctx.state)
+    ctx.state.scanElapsed = 0
     ctx.blacklist = Config.loadBlacklist(ctx.config)
     ctx.basegame = Config.loadBasegameSet(ctx.config)
     ctx.importedSet = Config.loadImported(ctx.config)
@@ -142,6 +143,7 @@ function Scanner.begin(ctx)
     end)
 
     if not ok then
+        ctx.forceScanAll = false
         ctx.state.phase = 'error'
         ctx.state.lastReason = tostring(records)
         Logger.error('Unable to enumerate clothing records: ' .. tostring(records))
@@ -158,13 +160,19 @@ function Scanner.begin(ctx)
     ctx.state.readyToImport = false
     Config.saveState(ctx.config, State.snapshot(ctx.state, Scanner.index))
 
-    Logger.info('Safe scan started with ' .. tostring(#records) .. ' clothing records')
+    if ctx.forceScanAll then
+        Logger.info('Full re-add scan started with ' .. tostring(#records) .. ' clothing records')
+    else
+        Logger.info('Safe scan started with ' .. tostring(#records) .. ' clothing records')
+    end
 end
 
 function Scanner.tick(ctx, deltaTime)
     if not Scanner.running then
         return
     end
+
+    ctx.state.scanElapsed = (ctx.state.scanElapsed or 0) + (deltaTime or 0)
 
     Scanner.accumulator = Scanner.accumulator + (deltaTime or 0)
     if Scanner.accumulator < ctx.config.scanDelay then
@@ -210,6 +218,7 @@ function Scanner.tick(ctx, deltaTime)
         ctx.state.lastIndex = 1
         Config.saveQueue(ctx.config, ctx.state.candidates)
         Config.saveState(ctx.config, State.snapshot(ctx.state, 1))
+        ctx.forceScanAll = false
         local skipSummary = {}
         for reason, count in pairs(ctx.state.skipReasons) do
             table.insert(skipSummary, reason .. '=' .. tostring(count))
@@ -229,6 +238,7 @@ function Scanner.stop(ctx)
     Scanner.records = {}
     Scanner.index = 1
     Scanner.accumulator = 0
+    ctx.forceScanAll = false
 end
 
 function Scanner.isRunning()

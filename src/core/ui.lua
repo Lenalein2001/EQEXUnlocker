@@ -7,11 +7,82 @@ local HUD_LINGER_SECONDS = 5
 -- CET panel tab state
 local activeTab = 'status' -- 'status' or 'settings'
 
-function UI.draw(ctx)
-    if not ctx.config.showWindow then
-        return
+local function formatDuration(seconds)
+    local totalSeconds = math.max(0, math.floor((seconds or 0) + 0.5))
+    local hours = math.floor(totalSeconds / 3600)
+    local minutes = math.floor((totalSeconds % 3600) / 60)
+    local secs = totalSeconds % 60
+
+    if hours > 0 then
+        return string.format('%d:%02d:%02d', hours, minutes, secs)
     end
 
+    return string.format('%02d:%02d', minutes, secs)
+end
+
+local function calculateEta(elapsed, completed, total)
+    if (total or 0) <= 0 then
+        return nil
+    end
+
+    if (completed or 0) >= total then
+        return 0
+    end
+
+    if (completed or 0) <= 0 or (elapsed or 0) <= 0 then
+        return nil
+    end
+
+    return (elapsed / completed) * (total - completed)
+end
+
+local function formatEta(seconds, approximate)
+    if seconds == nil then
+        return '--:--'
+    end
+
+    if approximate then
+        return '~' .. formatDuration(seconds)
+    end
+
+    return formatDuration(seconds)
+end
+
+local function getScanEta(state)
+    return calculateEta(state.scanElapsed, state.scanned, state.totalRecords)
+end
+
+local function getEstimatedImportEta(state, config)
+    local queued = math.max(0, tonumber(state.queued or 0))
+    if queued <= 0 then
+        return nil
+    end
+
+    local batchSize = math.max(1, tonumber((config and config.batchSize) or 1))
+    local importDelay = math.max(0, tonumber((config and config.importDelay) or 0))
+    local batches = math.ceil(queued / batchSize)
+    return batches * importDelay
+end
+
+local function getImportEta(state, config)
+    if state.phase == 'done' and (state.queued or 0) > 0 then
+        return 0, false
+    end
+
+    local processed = math.max(0, (state.lastIndex or 1) - 1)
+    local liveEta = calculateEta(state.importElapsed, processed, state.queued)
+    if liveEta ~= nil then
+        return liveEta, false
+    end
+
+    if state.phase ~= 'scan' and state.phase ~= 'import' and processed == 0 and (state.importElapsed or 0) <= 0 then
+        return getEstimatedImportEta(state, config), true
+    end
+
+    return nil, false
+end
+
+function UI.draw(ctx)
     if not ImGui.Begin('EQEXUnlocker', true) then
         ImGui.End()
         return
@@ -38,11 +109,34 @@ function UI.draw(ctx)
 end
 
 function UI.drawStatus(ctx)
+    local scanEta = getScanEta(ctx.state)
+    local importEta, importEtaApprox = getImportEta(ctx.state, ctx.config)
+    local importFps = 0
+    local smartScale = 1.0
+    if Importer and Importer.getSmoothedFps then
+        importFps = tonumber(Importer.getSmoothedFps()) or 0
+    end
+    if Importer and Importer.getSmartScale then
+        smartScale = tonumber(Importer.getSmartScale()) or 1.0
+    end
+
     -- Phase and counters
     ImGui.Text('Phase: ' .. tostring(ctx.state.phase))
     ImGui.Text('Scanned: ' .. tostring(ctx.state.scanned) .. ' / ' .. tostring(ctx.state.totalRecords))
     ImGui.Text('Queued: ' .. tostring(ctx.state.queued) .. ' | Imported: ' .. tostring(ctx.state.imported))
     ImGui.Text('Skipped: ' .. tostring(ctx.state.skipped) .. ' | Failed: ' .. tostring(ctx.state.failed))
+    ImGui.Text('Scan time: ' .. formatDuration(ctx.state.scanElapsed) .. ' | ETA: ' .. formatEta(scanEta))
+    ImGui.Text('Import time: ' .. formatDuration(ctx.state.importElapsed) .. ' | ETA: ' .. formatEta(importEta, importEtaApprox))
+    if ctx.config.smartImport then
+        local fpsText = '--'
+        if importFps > 0 then
+            fpsText = tostring(math.floor(importFps + 0.5))
+        end
+        local scalePct = math.floor((smartScale * 100) + 0.5)
+        ImGui.Text('Smart import: ON | Min FPS: ' .. tostring(ctx.config.smartImportMinFps) .. ' | Current: ' .. fpsText .. ' | Speed: ' .. tostring(scalePct) .. '%')
+    else
+        ImGui.Text('Smart import: OFF')
+    end
 
     if ctx.state.skipReasons and next(ctx.state.skipReasons) then
         local reasons = {}
@@ -68,6 +162,10 @@ function UI.drawStatus(ctx)
     ImGui.SameLine()
     if ImGui.Button('Start Import', 140, 30) then
         ctx.startImport()
+    end
+
+    if ImGui.Button('Re-add All', 280, 30) then
+        ctx.forceRescanAll()
     end
 
     if Importer.isRunning() and not ctx.state.paused then
@@ -155,7 +253,7 @@ function UI.drawSettings(ctx)
     ImGui.SameLine()
     local scanBatch, scanUsed = ImGui.InputInt('##scanBatch', ctx.config.scanBatchSize, 1, 10)
     if scanUsed and scanBatch ~= ctx.config.scanBatchSize then
-        ctx.config.scanBatchSize = math.max(1, math.min(500, scanBatch))
+        ctx.config.scanBatchSize = math.max(1, math.min(1000, scanBatch))
         changed = true
     end
 
@@ -165,6 +263,22 @@ function UI.drawSettings(ctx)
     local importDelay, delayUsed = ImGui.InputFloat('##importDelay', ctx.config.importDelay, 0.05, 0.1, '%.2f')
     if delayUsed and importDelay ~= ctx.config.importDelay then
         ctx.config.importDelay = math.max(0, math.min(5, importDelay))
+        changed = true
+    end
+    
+    -- Smart Import
+    local smartImport = ImGui.Checkbox('Smart import (respect FPS threshold)', ctx.config.smartImport)
+    if smartImport ~= ctx.config.smartImport then
+        ctx.config.smartImport = smartImport
+        changed = true
+    end
+
+    -- Smart Import FPS Threshold
+    ImGui.Text('Smart import minimum FPS:')
+    ImGui.SameLine()
+    local minFps, minFpsUsed = ImGui.InputInt('##smartImportMinFps', ctx.config.smartImportMinFps, 1, 5)
+    if minFpsUsed and minFps ~= ctx.config.smartImportMinFps then
+        ctx.config.smartImportMinFps = math.max(20, math.min(240, minFps))
         changed = true
     end
 
@@ -211,28 +325,49 @@ function UI.drawHUD(ctx)
     local title = ''
     local progress = 0
     local detail = ''
+    local eta = nil
+    local etaApprox = false
 
     if phase == 'scan' then
         title = 'EQEXUnlocker: Scanning'
         local total = math.max(1, state.totalRecords)
         progress = state.scanned / total
-        detail = tostring(state.scanned) .. ' / ' .. tostring(state.totalRecords) .. ' records'
+        eta = getScanEta(state)
+        detail = tostring(state.scanned) .. ' / ' .. tostring(state.totalRecords) .. ' records  |  ' .. formatDuration(state.scanElapsed) .. ' elapsed  |  ETA ' .. formatEta(eta)
     elseif phase == 'scan-complete' then
         title = 'EQEXUnlocker: Scan Complete'
         progress = 1.0
-        detail = tostring(state.queued) .. ' queued, ' .. tostring(state.skipped) .. ' skipped'
+        eta, etaApprox = getImportEta(state, ctx.config)
+        detail = tostring(state.queued) .. ' queued, ' .. tostring(state.skipped) .. ' skipped  |  ' .. formatDuration(state.scanElapsed)
+        if eta ~= nil then
+            detail = detail .. '  |  Est. import ETA ' .. formatEta(eta, etaApprox)
+        end
     elseif phase == 'import' then
         title = 'EQEXUnlocker: Importing'
         local total = math.max(1, state.queued)
         progress = math.max(0, state.lastIndex - 1) / total
+        eta, etaApprox = getImportEta(state, ctx.config)
+        local importFps = 0
+        local smartScale = 1.0
+        if Importer and Importer.getSmoothedFps then
+            importFps = tonumber(Importer.getSmoothedFps()) or 0
+        end
+        if Importer and Importer.getSmartScale then
+            smartScale = tonumber(Importer.getSmartScale()) or 1.0
+        end
         detail = tostring(state.imported) .. ' / ' .. tostring(state.queued)
         if state.failed > 0 then
             detail = detail .. '  (' .. tostring(state.failed) .. ' failed)'
         end
+        detail = detail .. '  |  ' .. formatDuration(state.importElapsed) .. ' elapsed  |  ETA ' .. formatEta(eta, etaApprox)
+        if ctx.config.smartImport and importFps > 0 then
+            detail = detail .. '  |  FPS ' .. tostring(math.floor(importFps + 0.5)) .. '/' .. tostring(ctx.config.smartImportMinFps)
+            detail = detail .. '  |  Speed ' .. tostring(math.floor((smartScale * 100) + 0.5)) .. '%'
+        end
     elseif isDone then
         title = 'EQEXUnlocker: Import Complete'
         progress = 1.0
-        detail = tostring(state.imported) .. ' imported, ' .. tostring(state.failed) .. ' failed'
+        detail = tostring(state.imported) .. ' imported, ' .. tostring(state.failed) .. ' failed  |  ' .. formatDuration(state.importElapsed)
     end
 
     if state.paused then
@@ -288,7 +423,7 @@ function UI.drawHUD(ctx)
 
     -- Gray detail text
     ImGui.PushStyleColor(ImGuiCol.Text, 0.70, 0.70, 0.70, 1.0)
-    ImGui.Text(detail)
+    ImGui.TextWrapped(detail)
     ImGui.PopStyleColor()
 
     ImGui.End()

@@ -17,7 +17,8 @@ local function defaults()
         badItems = {},
         paused = false,
         readyToImport = false,
-        elapsed = 0,
+        scanElapsed = 0,
+        importElapsed = 0,
         skipReasons = {}
     }
 end
@@ -47,7 +48,9 @@ function State.snapshot(state, nextIndex)
         lastIndex = nextIndex or state.lastIndex or 1,
         currentItemId = state.currentItemId or '',
         currentItemName = state.currentItemName or '',
-        lastReason = state.lastReason or ''
+        lastReason = state.lastReason or '',
+        scanElapsed = state.scanElapsed or 0,
+        importElapsed = state.importElapsed or 0
     }
 end
 
